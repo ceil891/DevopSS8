@@ -1,0 +1,60 @@
+name: Pull and Verify Payment Image
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ci.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PACKAGE_NAME: payment-service
+      IMAGE_TAG: 1.0.0
+      CONTAINER_NAME: payment-verify
+      DOCKER_CONFIG: ${{ runner.temp }}/ghcr-docker
+    steps:
+      - name: Resolve lowercase image reference
+        env:
+          OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          image="ghcr.io/${OWNER}/${PACKAGE_NAME}:${IMAGE_TAG}"
+          echo "IMAGE=${image,,}" >> "$GITHUB_ENV"
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+      - name: Pull image
+        run: docker pull "$IMAGE"
+      - name: Start container detached and verify HTTP health
+        run: |
+          docker run -d --name "$CONTAINER_NAME" -p 127.0.0.1:8080:8080 "$IMAGE"
+          for attempt in $(seq 1 60); do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME")" != true ]; then
+              echo 'Container exited before becoming ready'
+              exit 1
+            fi
+            if curl -fsS --max-time 2 http://127.0.0.1:8080/actuator/health > /tmp/payment-health.json; then
+              if jq -e '.status == "UP"' /tmp/payment-health.json; then
+                docker ps --filter "name=$CONTAINER_NAME"
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo 'Application did not become healthy within the startup window'
+          exit 1
+      - name: Container logs
+        if: always()
+        run: docker logs "$CONTAINER_NAME" 2>&1 || true
+      - name: Cleanup container and login
+        if: always()
+        run: |
+          docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+          docker logout ghcr.io || true

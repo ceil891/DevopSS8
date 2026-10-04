@@ -1,0 +1,21 @@
+name: Verify Docker Socket
+on:
+  push:
+    paths:
+      - exercise_01/**
+      - .github/workflows/dood-check.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  docker-check:
+    runs-on: [self-hosted, linux, x64, quickbite-dood]
+    timeout-minutes: 5
+    steps:
+      - name: Verify host Docker daemon
+        run: |
+          test -S /var/run/docker.sock
+          docker version
+          docker info
+      - name: Run a container through the host daemon
+        run: docker run --rm hello-world
